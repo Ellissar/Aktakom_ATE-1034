@@ -1,16 +1,15 @@
 ﻿using System;
 using System.Drawing;
-using System.Windows.Forms;
 using System.IO.Ports;
-using System.Threading;
 using System.Text.RegularExpressions;
+using System.Windows.Forms;
 
 namespace Aktakom_ATE_1034
 {
     public partial class FormMain : Form
     {
         SerialPort serialPort = new SerialPort();
-        
+
         public FormMain()
         {
             InitializeComponent();
@@ -18,16 +17,25 @@ namespace Aktakom_ATE_1034
 
         private void FormMain_Shown(object sender, EventArgs e)
         {
+            //заполнение списка существующих компортов
             string[] ports = SerialPort.GetPortNames();
             comboBoxCOMPort.Items.AddRange(ports);
             if (ports.Length > 0)
             {
                 comboBoxCOMPort.SelectedIndex = 0;
             }
+
+            //скрыть терминал
+            Size size = new Size(420, 354);
+            this.MinimumSize = size;
+            this.MaximumSize = size;
+            this.Size = size;
+            buttonShowTerminal.Text = ">>>";
         }
 
         private void comboBoxCOMPort_DropDown(object sender, EventArgs e)
         {
+            //обновление списка существующих компортов
             string[] ports = SerialPort.GetPortNames();
             comboBoxCOMPort.Items.Clear();
             comboBoxCOMPort.Items.AddRange(ports);
@@ -64,7 +72,7 @@ namespace Aktakom_ATE_1034
                     toolStripStatusLabelStatus.Text = "Ошибка подключения к COM порту";
                     return;
                 }
-                
+
                 buttonText.Text = "Отключить";
             }
             else
@@ -76,20 +84,27 @@ namespace Aktakom_ATE_1034
 
         private void DataReceivedHandler(object sender, SerialDataReceivedEventArgs e)
         {
-            SerialPort sp = (SerialPort)sender;
-            string value1, units1, raw1, screenNumber1;
-            string value2, units2, raw2, screenNumber2;
-            raw1 = sp.ReadLine();
-            StringParse (raw1, out value1, out units1, out screenNumber1);
-            raw2 = sp.ReadLine();
-            StringParse (raw2, out value2, out units2, out screenNumber2);
+            try
+            {
+                SerialPort sp = (SerialPort)sender;
+                string value, units, raw;
 
+                raw = sp.ReadLine();
+                StringParse(raw, out value, out units);
+                SendToForm(raw, value, units);
 
+                raw = sp.ReadLine();
+                StringParse(raw, out value, out units);
+                SendToForm(raw, value, units);
 
-            textBox.Invoke(new Action<string>((s) => textBox.Text += s + Environment.NewLine), raw1 + "  |  " + value1 + " " + units1);
-            textBox.Invoke(new Action<string>((s) => textBox.Text += s + Environment.NewLine), raw2 + "  |  " + value2 + " " + units2);
+                FlowCalc();
 
-            sp.DiscardInBuffer();
+                sp.DiscardInBuffer();
+            }
+            catch (Exception)
+            {
+                return;
+            }
         }
 
         private void FormMain_FormClosed(object sender, FormClosedEventArgs e)
@@ -114,7 +129,7 @@ namespace Aktakom_ATE_1034
         }
 
         //разбор полученной строки
-        private void StringParse (string str, out string value, out string units, out string screenNumber)
+        private void StringParse(string str, out string value, out string units)
         {
             value = str.Substring(7, 8);
 
@@ -150,24 +165,8 @@ namespace Aktakom_ATE_1034
                 value = "-" + value;
             }
 
-            //получено значение верхнего(1) или нижнего(2) числа на дисплее
-            switch (str[2])
-            {
-                case '1'://скорость воздуха
-                    screenNumber = "1";
-                    break;
-
-                case '2'://температура воздуха
-                    screenNumber = "2";
-                    break;
-
-                default:
-                    screenNumber = "Ошибка в полученных данных";
-                    break;
-            }
-
             //единицы измерения
-            switch (str.Substring(3,2))
+            switch (str.Substring(3, 2))
             {
                 case "01":
                     units = "°C";
@@ -204,25 +203,101 @@ namespace Aktakom_ATE_1034
         }
 
         //удалить лишние нули слева
-        private string DelZero (string str)
+        private string DelZero(string str)
         {
             //удаляет лишние нули слева от числа
             //если слева от точки стоит ноль (например 0.ххх) то получится строка .ххх
             MatchCollection matches = Regex.Matches(str, @"([1-9]*\,\d*)");
             foreach (Match match in matches)
                 str = match.Value;
-            
+
             //если слева от десятичной точки не хватает нуля (т.е. что-то типа .хх) то добавляем его
             if (str[0] == ',')
                 str = "0" + str;
-            
+
             return str;
         }
 
         //отображение параметра в элементы формы
-        private void writeResult()
+        private void SendToForm(string raw, string val, string units)
         {
+            textBox.Invoke(new Action<string>((s) => textBox.Text += s + Environment.NewLine), raw + "  |  " + val + " " + units);
+            //получено значение верхнего(1) или нижнего(2) числа на дисплее
+            switch (raw[2])
+            {
+                case '1'://скорость воздуха
+                    textBoxSpeed.Invoke(new Action<string>((s) => textBoxSpeed.Text = s), val);
+                    labelSpeedUnit.Invoke(new Action<string>((s) => labelSpeedUnit.Text = s), units);
+                    break;
 
+                case '2'://температура воздуха
+                    textBoxTemp.Invoke(new Action<string>((s) => textBoxTemp.Text = s), val);
+                    labelTempUnit.Invoke(new Action<string>((s) => labelTempUnit.Text = s), units);
+                    break;
+
+                default:
+                    toolStripStatusLabelStatus.ForeColor = Color.Red;
+                    toolStripStatusLabelStatus.Text = "Ошибка в полученных данных";
+                    break;
+            }
+        }
+
+        //вычисление объёмного расхода
+        private void FlowCalc()
+        {
+            //L = 3600 * F * V, где F - площадь сечения воздуховода в м^2, V - скорость воздуха в воздуховоде м/с
+            double L = 3600 * SCalc() * Convert.ToDouble(textBoxSpeed.Text);
+            textBoxFlow.Invoke(new Action<string>((s) => textBoxFlow.Text = s), L.ToString("N2"));
+        }
+
+        //расчёт площади сечения воздуховода
+        private double SCalc()
+        {
+            double result = 0;
+            try
+            {
+                if (radioButtonCirc.Checked)
+                {
+                    //S = 1/4*Pi*d^2
+                    result = Math.PI * (Math.Pow((Convert.ToDouble(textBoxCircRectmm.Text) / 1000), 2) / 4);
+                }
+                else
+                {
+                    //S = (a/1000) * (b/1000)
+                    result = (Convert.ToDouble(textBoxCircRectmm.Text) / 1000) * (Convert.ToDouble(textBoxRectmm.Text) / 1000);
+                }
+
+            }
+            catch (Exception)
+            {
+                labelFlowError.Invoke(new Action<string>((s) => labelFlowError.Text = s), "Введите размеры круглого или квадратного воздуховода");
+                return result = 0;
+            }
+
+            labelFlowError.Invoke(new Action<string>((s) => labelFlowError.Text = s), "");
+            return result;
+        }
+
+        //скрыть\показать терминал
+        private void buttonShowTerminal_Click(object sender, EventArgs e)
+        {
+            if (buttonShowTerminal.Text == ">>>")
+            {
+                Size size = new Size(650, 354);
+                this.MinimumSize = size;
+                this.MaximumSize = size;
+                this.Size = size;
+                buttonShowTerminal.Text = "<<<";
+            }
+            else
+            if (buttonShowTerminal.Text == "<<<")
+            {
+                Size size = new Size(420, 354);
+                this.MinimumSize = size;
+                this.MaximumSize = size;
+                this.Size = size;
+                buttonShowTerminal.Text = ">>>";
+            }
         }
     }
 }
